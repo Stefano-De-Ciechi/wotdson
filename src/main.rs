@@ -1,3 +1,5 @@
+use dotenv::dotenv;
+use std::{collections::HashMap, env};
 use scraper::{Html, Selector};
 
 #[derive(Debug)]
@@ -21,15 +23,27 @@ impl WordOfTheDay {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    
+
+    // load credentials from .env file
+    dotenv().ok();
+
+    let telegram_bot_token = env::var("TELEGRAM_BOT_TOKEN")?;
+    let telegram_chat_ids = env::var("TELEGRAM_CHAT_IDS")?;
+    let telegram_chat_ids: Vec<&str> = telegram_chat_ids.split(", ").collect();
+
+    println!("{telegram_bot_token}");
+    for id in telegram_chat_ids.clone() {
+        println!("{id}");
+    }
+
     let url = "https://unaparolaalgiorno.it/";
 
     let html = fetch_html(url).await?;
     let word = extract_data(&html);
 
     if let Ok(word) = word {
-        let res = format!("{}\n\n{}\n{}\nes. {}", word.word, word.meaning, word.etimo, word.examples);
-        println!("{res}");
+        let message = format!("{}\n\n{}\n\n{}\n\nes. {}", word.word, word.meaning, word.etimo, word.examples);
+        send_telegram_message(&telegram_bot_token, telegram_chat_ids, &message).await?;
     } else {
         eprintln!("unable to scrape data...");
     }
@@ -79,4 +93,27 @@ fn extract_data(html: &str) -> Result<WordOfTheDay, Box<dyn std::error::Error>> 
     let examples = examples.trim();
 
     Ok(WordOfTheDay::new(word, meaning, etimo, examples))
+}
+
+async fn send_telegram_message(bot_token: &str, chat_ids: Vec<&str>, message: &str) -> Result<(), reqwest::Error> {
+    let client = reqwest::Client::new();
+
+    let url = format!("https://api.telegram.org/bot{bot_token}/sendMessage");
+
+    for id in chat_ids {
+
+        let mut data = HashMap::new();
+        data.insert("chat_id", id);
+        data.insert("text", message);
+        data.insert("parse_mode", "HTML");
+
+        let res = client.post(&url)
+            .json(&data)
+            .send()
+            .await?;
+
+        println!("{:?}", res);
+    }
+
+    Ok(())
 }
