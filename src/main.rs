@@ -1,4 +1,6 @@
+use chrono::Datelike;
 use dotenv::dotenv;
+use rusqlite::{Connection, params};
 use std::{collections::HashMap, env};
 use reqwest::header::{HeaderName, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, ORIGIN, REFERER, USER_AGENT};
 use serde::Deserialize;
@@ -33,6 +35,17 @@ impl WordOfTheDay {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
+    // get today date in format yyyy-mm-dd (the date is the primary key in the words history db)
+    let today = chrono::Utc::now();
+    let today = format!("{}-{:0>2}-{:0>2}", today.year(), today.month(), today.day());
+    println!("today is: {today}");
+
+    // query the db; if a record with publish_date == today, exit the program
+    if today_has_record(&today) {
+        println!("there is already a record from today; quitting...");
+        return Ok(());
+    }
+ 
     // load credentials from .env file
     dotenv().ok();
 
@@ -40,21 +53,97 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let telegram_chat_ids = env::var("TELEGRAM_CHAT_IDS").expect("TELEGRAM_CHAT_IDS not set");
     let telegram_chat_ids: Vec<&str> = telegram_chat_ids.split(", ").collect();
 
-    println!("{telegram_bot_token}");
-    for id in telegram_chat_ids.clone() {
-        println!("{id}");
-    }
-
+    print!("fetching data... ");
     let word = fetch_data().await;
+    println!("DONE");
 
     if let Ok(word) = word {
-        let message = word.to_message();
-        send_telegram_message(&telegram_bot_token, telegram_chat_ids, &message).await?;
+        let stored = store_today_record(&word);
+        if stored {
+            println!("\ntoday record stored; sending message... ");
+
+            let message = word.to_message();
+            // TODO should check if message was sended or not... if not there should be some logic
+            // to retry? or just delete the record from DB? (it's the simpler solution)
+            send_telegram_message(&telegram_bot_token, telegram_chat_ids, &message).await?;
+        }
+        else {
+            eprintln!("error, the record was not stored, abort sending message...");
+        }
     } else {
         eprintln!("unable to scrape data...");
     }
 
     Ok(())
+}
+
+fn today_has_record(today: &str) -> bool {
+    let db_path = "./words_history.db";
+
+    let conn = match Connection::open(db_path) {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("could not open sqlite connection to word_history.db...");
+            return false;
+        }
+    };
+
+    let mut stmt = match conn.prepare("SELECT * FROM history WHERE publish_date = :today;") {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!("error while preparing sql SELECT statement...");
+            return false;
+        }
+    };
+
+    let res_iter = stmt.query_map(&[(":today", today)], |row| {
+        Ok(
+            WordOfTheDay {
+                publish_date: row.get(0)?,
+                word: row.get(1)?,
+                syllables: row.get(2)?,
+                meaning: row.get(3)?,
+                etymology: row.get(4)?,
+                examples: row.get(5)?,
+            }
+        )
+    });
+
+    match res_iter {
+        Ok(res) => res.count() >= 1,
+        Err(_) => {
+            eprintln!("error with mapping SELECT result...");
+            false
+        }
+    }
+
+}
+
+fn store_today_record(record: &WordOfTheDay) -> bool {
+
+    let db_path = "./words_history.db";
+
+    let conn = match Connection::open(db_path) {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("could not open sqlite connection to word_history.db...");
+            return false;
+        }
+    };
+
+    let res = conn.execute(
+        "INSERT INTO history (publish_date, word, syllables, meaning, etymology, examples) VALUES (?1, ?2, ?3, ?4, ?5, ?6);",
+        params![record.publish_date, record.word, record.syllables, record.meaning, record.etymology, record.examples]
+    );
+
+    match res {
+        Ok(rows) => rows == 1,
+        Err(e) => {
+            eprintln!("error during sql INSERT of today record...");
+            eprintln!("{:?}", e);
+            false
+        }
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -161,7 +250,7 @@ fn parse_wrapper(json_data: &str) -> TodayApiResponse {
     struct Wrapper {
         #[serde(rename = "oggi")]
         data: TodayApiResponse
-    };
+    }
     
     let wrapper: Wrapper = serde_json::from_str(json_data).unwrap();
     wrapper.data
@@ -179,12 +268,13 @@ async fn send_telegram_message(bot_token: &str, chat_ids: Vec<&str>, message: &s
         data.insert("text", message);
         data.insert("parse_mode", "HTML");
 
-        let res = client.post(&url)
+        let _ = client.post(&url)
             .json(&data)
             .send()
             .await?;
 
-        println!("{:?}", res);
+        //println!("{:?}", res);
+        println!("sending message DONE");
     }
 
     Ok(())
