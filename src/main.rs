@@ -26,7 +26,7 @@ impl WordOfTheDay {
     }
     
     fn to_message(&self) -> String {
-        format!("{}\n{}\n{}\n{}\n{}\nes. {}", self.publish_date, self.word, self.syllables, self.meaning, self.etymology, self.examples)
+        format!("{}\n\n{}\n{}\n\n{}\n\n{}\n\nes. {}", self.publish_date, self.word, self.syllables, self.meaning, self.etymology, self.examples)
     }
 }
 
@@ -59,8 +59,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[derive(Deserialize, Debug)]
 struct TodayApiResponse {
-    #[serde(rename(deserialize = "data_pubblicazione"))]
-    publish_date: String,
+    //#[serde(rename(deserialize = "data_pubblicazione"))]
+    //publish_date: String,
 
     #[serde(rename(deserialize = "url_parola"))]
     word_url: String,
@@ -84,8 +84,8 @@ struct WordApiResponse {
     #[serde(rename(deserialize = "significato"))]
     meaning: String,
 
-    #[serde(rename(deserialize = "preview"))]
-    preview: String,
+    //#[serde(rename(deserialize = "preview"))]
+    //preview: String,
 
     #[serde(rename(deserialize = "sillabe"))]
     syllables: String,
