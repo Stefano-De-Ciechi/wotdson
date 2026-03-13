@@ -40,11 +40,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let today = format!("{}-{:0>2}-{:0>2}", today.year(), today.month(), today.day());
     println!("today is: {today}");
 
+    print!("searching today record... ");
     // query the db; if a record with publish_date == today, exit the program
     if today_has_record(&today) {
-        println!("there is already a record from today; quitting...");
+        println!("FOUND");
+        println!("stop procedure\n");
         return Ok(());
     }
+
+    println!("NOT FOUND");
  
     // load credentials from .env file
     dotenv().ok();
@@ -58,14 +62,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("DONE");
 
     if let Ok(word) = word {
+        print!("storing today record... ");
         let stored = store_today_record(&word);
         if stored {
-            println!("\ntoday record stored; sending message... ");
+            println!("DONE");
 
             let message = word.to_message();
             // TODO should check if message was sended or not... if not there should be some logic
             // to retry? or just delete the record from DB? (it's the simpler solution)
+            print!("sending telegram message... ");
             send_telegram_message(&telegram_bot_token, telegram_chat_ids, &message).await?;
+            println!("DONE");
         }
         else {
             eprintln!("error, the record was not stored, abort sending message...");
@@ -74,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("unable to scrape data...");
     }
 
-    println!("");
+    println!("finished\n");
     Ok(())
 }
 
@@ -275,7 +282,6 @@ async fn send_telegram_message(bot_token: &str, chat_ids: Vec<&str>, message: &s
             .await?;
 
         //println!("{:?}", res);
-        println!("sending message DONE");
     }
 
     Ok(())
