@@ -1,6 +1,6 @@
-use chrono::Datelike;
+use chrono::{Datelike, Days};
 use dotenv::dotenv;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, fallible_streaming_iterator::FallibleStreamingIterator, params};
 use std::{collections::HashMap, env };
 use reqwest::header::{HeaderName, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, ORIGIN, REFERER, USER_AGENT};
 use serde::Deserialize;
@@ -40,22 +40,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // get today date in format yyyy-mm-dd (the date is the primary key in the words history db)
     let today = chrono::Utc::now();
     let today = format!("{}-{:0>2}-{:0>2}", today.year(), today.month(), today.day());
-    println!("today is: {today}");
+    eprintln!("today is: {today}");
 
-    print!("checking db status... ");
+    eprint!("checking db status... ");
     if !ensure_db_created() {
         return Ok(());    // this should not be ok...
     }
 
-    print!("searching today record... ");
+    eprint!("searching today record... ");
     // query the db; if a record with publish_date == today, exit the program
     if today_has_record(&today) {
-        println!("FOUND");
-        println!("stop procedure\n");
+        eprintln!("FOUND");
+        eprintln!("stop procedure\n");
         return Ok(());
     }
 
-    println!("NOT FOUND");
+    eprintln!("NOT FOUND");
  
     // load credentials from .env file
     dotenv().ok();
@@ -64,31 +64,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let telegram_chat_ids = env::var("TELEGRAM_CHAT_IDS").expect("TELEGRAM_CHAT_IDS not set");
     let telegram_chat_ids: Vec<&str> = telegram_chat_ids.split(", ").collect();
 
-    print!("fetching data... ");
+    eprint!("fetching data... ");
     let word = fetch_data().await;
-    println!("DONE");
 
-    if let Ok(word) = word {
-        print!("storing today record... ");
-        let stored = store_today_record(&word);
-        if stored {
-            println!("DONE");
+    let word = match word {
+        Ok(w) => w,
+        Err(_) => {
+            eprintln!("FAILED");
+            eprintln!("unable to scrape data...");
+            eprintln!("stop procedure\n");
+            return Ok(()) // this should not be ok...
+        }
+    };
 
-            let message = word.to_message();
-            // TODO should check if message was sended or not... if not there should be some logic
-            // to retry? or just delete the record from DB? (it's the simpler solution)
-            print!("sending telegram message... ");
-            send_telegram_message(&telegram_bot_token, telegram_chat_ids, &message).await?;
-            println!("DONE");
-        }
-        else {
-            eprintln!("error, the record was not stored, abort sending message...");
-        }
-    } else {
-        eprintln!("unable to scrape data...");
+    eprintln!("DONE");
+
+    eprint!("checking yesterday history for word '{}'... ", word.word);
+
+    if !api_has_new_word(&word.word) {
+        eprintln!("WORD ALREADY FOUND");
+        eprintln!("APIs did not update with new word of the day...");
+        eprintln!("stop procedure\n");
+        return Ok(());
     }
 
-    println!("finished\n");
+    eprintln!("DONE");
+
+    eprint!("storing today record... ");
+
+    if !store_today_record(&word) {
+        eprintln!("FAILED");
+        eprintln!("the record was not stored, abort sending message...");
+        return Ok(())
+    }
+
+    eprintln!("DONE");
+
+    let message = word.to_message();
+    
+    // TODO should check if message was sended or not... if not there should be some logic
+    // to retry? or just delete the record from DB? (it's the simpler solution)
+    eprint!("sending telegram message... ");
+    send_telegram_message(&telegram_bot_token, telegram_chat_ids, &message).await?;
+    eprintln!("DONE");
+
+    eprintln!("finished\n");
     Ok(())
 }
 
@@ -117,7 +137,7 @@ fn ensure_db_created() -> bool {
 
     match res {
         Ok(_) => {
-            println!("DONE");
+            eprintln!("DONE");
             return true;
         },
         Err(_) => {
@@ -168,6 +188,49 @@ fn today_has_record(today: &str) -> bool {
         }
     }
 
+}
+
+/// check if the scraped word already exists in the db (if yes, api probably didn't update with new
+/// word of the day)
+fn api_has_new_word(word: &str) -> bool {
+
+    let conn = match Connection::open(DATABASE_PATH) {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("could not open sqlite connection to word_history.db...");
+            return false;
+        }
+    };
+
+    let yesterday = match chrono::Utc::now().checked_sub_days(Days::new(1)) {
+        Some(date) => format!("{}-{:0>2}-{:0>2}", date.year(), date.month(), date.day()),
+        None => {
+            eprintln!("could not get yesterday date...");
+            return false;
+        },
+    };
+
+    let mut stmt = match conn.prepare("SELECT * FROM history WHERE publish_date = :yesterday AND word = :word;") {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!("error while preparing sql SELECT statement...");
+            return false;
+        }
+    };
+
+    // tuples params must have the same type
+    // ex. [(&str, &str), (&str, &str)] is OK
+    //     [(&str, String OR &String), (&str, &str)] is NOT OK
+    // that is why yesterday.as_str() is needed
+    let res = stmt.query(&[(":yesterday", yesterday.as_str()), (":word", word)]);
+    match res {
+        Ok(r) => r.count() == Ok(0),
+        Err(_) => {
+            eprintln!("error retrieving words history...");
+            false
+        }
+    }
+    
 }
 
 fn store_today_record(record: &WordOfTheDay) -> bool {
@@ -259,7 +322,7 @@ async fn fetch_data() -> Result<WordOfTheDay, reqwest::Error> {
         .await?;
     
     let home_data = parse_wrapper(&json);
-    //println!("{:?}", home_data);
+    //eprintln!("{:?}", home_data);
     
     // ===== word data =====
     let url = &format!("https://v3.unaparolaalgiorno.it/api/words/view/{}", home_data.word_url);
@@ -288,7 +351,7 @@ async fn fetch_data() -> Result<WordOfTheDay, reqwest::Error> {
         .json()
         .await?;
     
-    //println!("{:?}", word_data);
+    //eprintln!("{:?}", word_data);
     
     Ok(WordOfTheDay::new(&word_data.word, &word_data.syllables, &word_data.meaning, &word_data.etymology, &word_data.examples, &word_data.publish_date))
 }
@@ -322,7 +385,7 @@ async fn send_telegram_message(bot_token: &str, chat_ids: Vec<&str>, message: &s
             .send()
             .await?;
 
-        //println!("{:?}", res);
+        //eprintln!("{:?}", res);
     }
 
     Ok(())
