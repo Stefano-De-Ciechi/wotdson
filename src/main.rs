@@ -1,9 +1,11 @@
 use chrono::Datelike;
 use dotenv::dotenv;
 use rusqlite::{Connection, params};
-use std::{collections::HashMap, env};
+use std::{collections::HashMap, env };
 use reqwest::header::{HeaderName, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, ORIGIN, REFERER, USER_AGENT};
 use serde::Deserialize;
+
+const DATABASE_PATH: &str = "./words_history.db";
 
 #[derive(Debug)]
 struct WordOfTheDay {
@@ -39,6 +41,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let today = chrono::Utc::now();
     let today = format!("{}-{:0>2}-{:0>2}", today.year(), today.month(), today.day());
     println!("today is: {today}");
+
+    print!("checking db status... ");
+    if !ensure_db_created() {
+        return Ok(());    // this should not be ok...
+    }
 
     print!("searching today record... ");
     // query the db; if a record with publish_date == today, exit the program
@@ -85,10 +92,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn today_has_record(today: &str) -> bool {
-    let db_path = "./words_history.db";
+fn ensure_db_created() -> bool {
 
-    let conn = match Connection::open(db_path) {
+    let conn = match Connection::open(DATABASE_PATH) {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("FAILED");
+            eprintln!("could not open sqlite connection to .db file...");
+            return false;
+        }
+    };
+
+    let res = conn.execute(r"
+        CREATE TABLE IF NOT EXISTS history (
+            publish_date	TEXT NOT NULL UNIQUE,
+            word		TEXT NOT NULL,
+            syllables	TEXT,
+            meaning		TEXT,
+            etymology	TEXT,
+            examples	TEXT,
+            PRIMARY KEY(publish_date)
+        );
+        ", []);
+
+    match res {
+        Ok(_) => {
+            println!("DONE");
+            return true;
+        },
+        Err(_) => {
+            eprintln!("FAILED");
+            eprintln!("could not create table 'history' in the .db file...");
+            return false;
+        }
+    }
+
+}
+
+fn today_has_record(today: &str) -> bool {
+
+    let conn = match Connection::open(DATABASE_PATH) {
         Ok(c) => c,
         Err(_) => {
             eprintln!("could not open sqlite connection to word_history.db...");
@@ -129,9 +172,7 @@ fn today_has_record(today: &str) -> bool {
 
 fn store_today_record(record: &WordOfTheDay) -> bool {
 
-    let db_path = "./words_history.db";
-
-    let conn = match Connection::open(db_path) {
+    let conn = match Connection::open(DATABASE_PATH) {
         Ok(c) => c,
         Err(_) => {
             eprintln!("could not open sqlite connection to word_history.db...");
